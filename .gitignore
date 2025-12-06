@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+backend/venv/
+env/
+ENV/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+.next/
+out/
+build/
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Backup files
+*.backup
+*.bak
