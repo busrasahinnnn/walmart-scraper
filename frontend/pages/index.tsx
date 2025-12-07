@@ -60,7 +60,7 @@ export default function Home() {
 
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/scrape", {
+      const res = await fetch("https://walmart-scraper-59d8.onrender.com/scrape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
