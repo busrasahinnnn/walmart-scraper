@@ -33,8 +33,9 @@ app.add_middleware(
 
 class ScrapeRequest(BaseModel):
     """Request model for scraping endpoint."""
-    item_ids: List[str] = Field(..., description="List of Walmart item IDs to scrape")
-    max_reviews_per_item: int = Field(default=50, ge=1, le=500, description="Maximum reviews to scrape per item")
+    item_ids: List[str] = Field(..., description="List of Walmart item IDs to scrape", max_items=10)
+    max_reviews_per_item: int = Field(default=1000, ge=1, le=10000, description="Maximum reviews to scrape per item")
+
 
 
 class ScrapeResponse(BaseModel):
@@ -94,16 +95,40 @@ async def scrape_endpoint(req: ScrapeRequest):
             except Exception as e:
                 error_msg = str(e)
                 print(f"❌ Error scraping item {item_id}: {error_msg}")
+                
+                # Make error message user-friendly
+                user_friendly_msg = error_msg
+                if "Failed to scrape" in error_msg or "GET https://" in error_msg:
+                    user_friendly_msg = "Could not access this product. Please verify the item ID is correct."
+                elif "timeout" in error_msg.lower():
+                    user_friendly_msg = "Request timed out. Please try again."
+                elif "connection" in error_msg.lower():
+                    user_friendly_msg = "Network connection issue. Please try again."
+                
                 errors.append({
                     "item_id": item_id,
-                    "error": error_msg
+                    "error": user_friendly_msg
                 })
 
     # Filter and validate item IDs
-    valid_ids = [i.strip() for i in req.item_ids if i.strip()]
+    valid_ids = []
+    for item_id in req.item_ids:
+        cleaned = item_id.strip()
+        # Walmart item IDs are typically 6-20 alphanumeric characters
+        if cleaned and len(cleaned) >= 6 and len(cleaned) <= 20 and cleaned.replace('-', '').replace('_', '').isalnum():
+            valid_ids.append(cleaned)
     
     if not valid_ids:
-        raise HTTPException(status_code=400, detail="No valid item_ids provided")
+        raise HTTPException(
+            status_code=400, 
+            detail="Please enter valid Walmart item IDs. Item IDs should be 6-20 characters (letters and numbers only)."
+        )
+    
+    if len(valid_ids) > 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Maximum 10 items can be scraped at once. Please reduce the number of item IDs."
+        )
 
     # Create tasks for all items
     tasks = [asyncio.create_task(_run_one(item_id)) for item_id in valid_ids]

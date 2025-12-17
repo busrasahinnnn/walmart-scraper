@@ -24,6 +24,8 @@ type ProductResult = {
   total_reviews: number | null;
   rating_breakdown: Record<string, number>;
   reviews: Review[];
+  best_reviews?: Review[];
+  worst_reviews?: Review[];
 };
 
 type ErrorResult = {
@@ -38,7 +40,7 @@ type ApiResponse = {
 
 export default function Home() {
   const [itemIdsText, setItemIdsText] = useState("");
-  const [maxReviews, setMaxReviews] = useState(50);
+  const [maxReviews, setMaxReviews] = useState(1000);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +57,22 @@ export default function Home() {
 
     if (!ids.length) {
       setError("Please enter at least one item ID.");
+      return;
+    }
+
+    if (ids.length > 10) {
+      setError("Maximum 10 items allowed. Please reduce the number of item IDs.");
+      return;
+    }
+
+    // Validate item ID format (6-20 alphanumeric characters)
+    const invalidIds = ids.filter(id => {
+      const cleaned = id.replace(/-/g, '').replace(/_/g, '');
+      return id.length > 20 || id.length < 6 || !cleaned.match(/^[a-zA-Z0-9]+$/);
+    });
+
+    if (invalidIds.length > 0) {
+      setError(`Oops! "${invalidIds[0]}" doesn't look like a valid Walmart SKU code. Please check and try again. (SKU codes are usually 6-20 characters)`);
       return;
     }
 
@@ -77,7 +95,22 @@ export default function Home() {
       const json: ApiResponse = await res.json();
       setData(json);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Unknown error occurred";
+      let errorMessage = "An error occurred while scraping. Please try again.";
+      
+      if (err instanceof Error) {
+        if (err.message.includes("Failed to fetch") || err.message.includes("NetworkError")) {
+          errorMessage = "Could not connect to server. Please check your internet connection and try again.";
+        } else if (err.message.includes("timeout")) {
+          errorMessage = "Request timed out. The server might be busy. Please try again in a moment.";
+        } else if (err.message.includes("Maximum 10 items")) {
+          errorMessage = err.message;
+        } else if (err.message.includes("valid Walmart item IDs")) {
+          errorMessage = err.message;
+        } else if (err.message) {
+          errorMessage = err.message;
+        }
+      }
+      
       setError(errorMessage);
       console.error("Scrape error:", err);
     } finally {
@@ -102,15 +135,29 @@ export default function Home() {
 
   const renderStars = (rating: number | null) => {
     if (!rating) return "N/A";
-    const fullStars = Math.floor(rating);
-    const hasHalf = rating % 1 >= 0.5;
+    const numRating = Number(rating);
+    const fullStars = Math.floor(numRating);
+    const hasHalf = numRating % 1 >= 0.5;
+    
     return (
-      <span className="stars">
-        {[...Array(5)].map((_, i) => (
-          <span key={i} className={i < fullStars ? "star-filled" : i === fullStars && hasHalf ? "star-half" : "star-empty"}>
-            ★
-          </span>
-        ))}
+      <span style={{ display: 'inline-flex', gap: '2px' }}>
+        {[...Array(5)].map((_, i) => {
+          const isFilled = i < fullStars;
+          const isHalf = i === fullStars && hasHalf;
+          
+          return (
+            <span 
+              key={i} 
+              style={{
+                color: isFilled ? '#f59e0b' : isHalf ? '#f59e0b' : '#e2e8f0',
+                opacity: isHalf ? 0.5 : 1,
+                fontSize: '1.2em'
+              }}
+            >
+              ★
+            </span>
+          );
+        })}
       </span>
     );
   };
@@ -119,6 +166,10 @@ export default function Home() {
     <>
       <style jsx>{`
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+        * {
+          -webkit-text-fill-color: initial !important;
+        }
 
         .container {
           min-height: 100vh;
@@ -198,6 +249,16 @@ export default function Home() {
           letter-spacing: 0.5px;
         }
 
+        .label-hint {
+          display: block;
+          font-weight: 400;
+          font-size: 0.85rem;
+          margin-top: 4px;
+          color: #718096;
+          text-transform: none;
+          letter-spacing: normal;
+        }
+
         .textarea {
           width: 100%;
           padding: 16px;
@@ -209,6 +270,14 @@ export default function Home() {
           transition: all 0.3s ease;
           background: #f7fafc;
           box-sizing: border-box;
+          color: #1a202c !important;
+          -webkit-text-fill-color: #1a202c !important;
+          -webkit-appearance: none;
+        }
+
+        .textarea::placeholder {
+          color: #a0aec0 !important;
+          -webkit-text-fill-color: #a0aec0 !important;
         }
 
         .textarea:focus {
@@ -233,6 +302,9 @@ export default function Home() {
           transition: all 0.3s ease;
           background: #f7fafc;
           box-sizing: border-box;
+          color: #1a202c !important;
+          -webkit-text-fill-color: #1a202c !important;
+          -webkit-appearance: none;
         }
 
         .input:focus {
@@ -614,7 +686,8 @@ export default function Home() {
             <form onSubmit={handleSubmit}>
               <div className="form-group">
                 <label className="label" htmlFor="itemIds">
-                  Walmart Item IDs
+                  Walmart SKU Codes
+                  <span className="label-hint">Maximum 10 SKUs • 6-20 characters each</span>
                 </label>
                 <textarea
                   id="itemIds"
@@ -622,14 +695,19 @@ export default function Home() {
                   className="textarea"
                   value={itemIdsText}
                   onChange={(e) => setItemIdsText(e.target.value)}
-                  placeholder="Enter item IDs (one per line or comma separated)&#10;Example: 5337824985"
+                  placeholder="Enter Walmart SKU codes (one per line or comma separated)&#10;Example: 6000206317264&#10;Maximum 10 SKUs"
                   disabled={loading}
+                  maxLength={500}
+                  style={{
+                    color: '#1a202c !important',
+                    WebkitTextFillColor: '#1a202c !important',
+                  }}
                 />
               </div>
 
               <div className="form-group">
                 <label className="label" htmlFor="maxReviews">
-                  Max Reviews Per Item
+                  Max Reviews Per SKU
                 </label>
                 <input
                   id="maxReviews"
@@ -637,9 +715,13 @@ export default function Home() {
                   className="input"
                   value={maxReviews}
                   min={1}
-                  max={500}
+                  max={10000}
                   onChange={(e) => setMaxReviews(Number(e.target.value))}
                   disabled={loading}
+                  style={{
+                    color: '#1a202c !important',
+                    WebkitTextFillColor: '#1a202c !important',
+                  }}
                 />
               </div>
 
@@ -668,7 +750,7 @@ export default function Home() {
           {loading && (
             <div className="loading-box">
               <div className="spinner"></div>
-              <p>Scraping reviews... This may take a moment.</p>
+              <p>Scraping ALL reviews... This may take a few moments.</p>
             </div>
           )}
 
@@ -686,7 +768,7 @@ export default function Home() {
                       
                       <div className="product-meta">
                         <div className="meta-item">
-                          <span className="meta-label">Item ID</span>
+                          <span className="meta-label">SKU Code</span>
                           <span className="meta-value">{product.item_id}</span>
                         </div>
                         <div className="meta-item">
@@ -701,7 +783,7 @@ export default function Home() {
                           <span className="meta-value">{product.total_ratings?.toLocaleString() || "Unknown"}</span>
                         </div>
                         <div className="meta-item">
-                          <span className="meta-label">Scraped</span>
+                          <span className="meta-label">Scraped Reviews</span>
                           <span className="meta-value">{product.reviews.length} reviews</span>
                         </div>
                       </div>
@@ -714,11 +796,161 @@ export default function Home() {
                         </p>
                       )}
 
+                      {/* Best and Worst Reviews Section */}
+                      {((product.best_reviews && product.best_reviews.length > 0) || 
+                        (product.worst_reviews && product.worst_reviews.length > 0)) && (
+                        <div style={{ marginTop: '32px' }}>
+                          {/* Best Reviews */}
+                          {product.best_reviews && product.best_reviews.length > 0 && (
+                            <div style={{ marginBottom: '20px' }}>
+                              <h4 style={{ 
+                                fontSize: '1.2rem', 
+                                fontWeight: '700', 
+                                color: '#2d3748', 
+                                marginBottom: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px'
+                              }}>
+                                <span>👍</span> Top {product.best_reviews.length} Positive Reviews
+                              </h4>
+                              <div style={{ 
+                                background: '#f0fdf4', 
+                                padding: '16px', 
+                                borderRadius: '12px',
+                                border: '2px solid #86efac'
+                              }}>
+                                {product.best_reviews.map((review, ridx) => (
+                                  <div key={ridx} style={{ 
+                                    background: 'white',
+                                    padding: '16px',
+                                    borderRadius: '8px',
+                                    marginBottom: ridx < product.best_reviews!.length - 1 ? '12px' : '0',
+                                    borderLeft: '4px solid #22c55e'
+                                  }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                                      {renderStars(review.rating)}
+                                      <span style={{ fontWeight: '600', color: '#2d3748' }}>{review.author_name}</span>
+                                      {review.verified_purchase && (
+                                        <span style={{ 
+                                          background: '#22c55e', 
+                                          color: 'white', 
+                                          padding: '4px 12px', 
+                                          borderRadius: '20px', 
+                                          fontSize: '0.8rem', 
+                                          fontWeight: '600' 
+                                        }}>✓ Verified</span>
+                                      )}
+                                    </div>
+                                    {review.title && (
+                                      <h5 style={{ 
+                                        fontSize: '1rem', 
+                                        fontWeight: '700', 
+                                        color: '#2d3748', 
+                                        margin: '0 0 8px' 
+                                      }}>{review.title}</h5>
+                                    )}
+                                    <p style={{ 
+                                      color: '#4a5568', 
+                                      lineHeight: '1.7', 
+                                      margin: '0 0 8px',
+                                      fontSize: '0.95rem'
+                                    }}>
+                                      {review.body}
+                                    </p>
+                                    {review.created_at && (
+                                      <p style={{ fontSize: '0.85rem', color: '#a0aec0', margin: '0' }}>
+                                        📅 {review.created_at}
+                                      </p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Other Reviews */}
+                          {product.worst_reviews && product.worst_reviews.length > 0 && (
+                            <div>
+                              <h4 style={{ 
+                                fontSize: '1.2rem', 
+                                fontWeight: '700', 
+                                color: '#2d3748', 
+                                marginBottom: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px'
+                              }}>
+                                <span>📝</span> Bad Reviews
+                              </h4>
+                              <div style={{ 
+                                background: '#f0f9ff', 
+                                padding: '16px', 
+                                borderRadius: '12px',
+                                border: '2px solid #bfdbfe'
+                              }}>
+                                {product.worst_reviews.map((review, ridx) => {
+                                  const ratingNum = Number(review.rating);
+                                  console.log(`Worst Review ${ridx}: rating=${review.rating}, type=${typeof review.rating}, converted=${ratingNum}`);
+                                  return (
+                                  <div key={ridx} style={{ 
+                                    background: 'white',
+                                    padding: '16px',
+                                    borderRadius: '8px',
+                                    marginBottom: ridx < product.worst_reviews!.length - 1 ? '12px' : '0',
+                                    borderLeft: '4px solid #ef4444'
+                                  }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                                      {renderStars(ratingNum)}
+                                      <span style={{ fontSize: '0.85rem', color: '#ef4444', fontWeight: '600' }}>
+                                        ({ratingNum}★)
+                                      </span>
+                                      <span style={{ fontWeight: '600', color: '#2d3748' }}>{review.author_name}</span>
+                                      {review.verified_purchase && (
+                                        <span style={{ 
+                                          background: '#ef4444', 
+                                          color: 'white', 
+                                          padding: '4px 12px', 
+                                          borderRadius: '20px', 
+                                          fontSize: '0.8rem', 
+                                          fontWeight: '600' 
+                                        }}>✓ Verified</span>
+                                      )}
+                                    </div>
+                                    {review.title && (
+                                      <h5 style={{ 
+                                        fontSize: '1rem', 
+                                        fontWeight: '700', 
+                                        color: '#2d3748', 
+                                        margin: '0 0 8px' 
+                                      }}>{review.title}</h5>
+                                    )}
+                                    <p style={{ 
+                                      color: '#4a5568', 
+                                      lineHeight: '1.7', 
+                                      margin: '0 0 8px',
+                                      fontSize: '0.95rem'
+                                    }}>
+                                      {review.body}
+                                    </p>
+                                    {review.created_at && (
+                                      <p style={{ fontSize: '0.85rem', color: '#a0aec0', margin: '0' }}>
+                                        📅 {review.created_at}
+                                      </p>
+                                    )}
+                                  </div>
+                                )})}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       {product.reviews.length > 0 && (
                         <div className="reviews-section">
                           <details>
                             <summary className="reviews-toggle">
-                              <span>📝 View {product.reviews.length} Reviews</span>
+                              <span>📝 View All {product.reviews.length} Reviews</span>
                               <span>▼</span>
                             </summary>
                             <div className="reviews-list">
@@ -735,8 +967,7 @@ export default function Home() {
                                     <h4 className="review-title">{review.title}</h4>
                                   )}
                                   <p className="review-body">
-                                    {review.body.substring(0, 250)}
-                                    {review.body.length > 250 && "..."}
+                                    {review.body}
                                   </p>
                                   {review.created_at && (
                                     <p className="review-date">📅 {review.created_at}</p>
@@ -754,10 +985,11 @@ export default function Home() {
 
               {data.errors && data.errors.length > 0 && (
                 <div className="error-box" style={{ marginTop: '24px' }}>
-                  <h3 style={{ margin: '0 0 16px' }}>❌ Errors ({data.errors.length})</h3>
+                  <h3 style={{ margin: '0 0 16px' }}>⚠️ Some Items Could Not Be Scraped ({data.errors.length})</h3>
                   {data.errors.map((err, idx) => (
-                    <div key={idx} style={{ marginBottom: '8px' }}>
-                      <strong>Item {err.item_id}:</strong> {err.error}
+                    <div key={idx} style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: idx < data.errors!.length - 1 ? '1px solid rgba(255,255,255,0.2)' : 'none' }}>
+                      <div style={{ fontWeight: '600', marginBottom: '4px' }}>SKU Code: {err.item_id}</div>
+                      <div style={{ fontSize: '0.95rem' }}>{err.error}</div>
                     </div>
                   ))}
                 </div>

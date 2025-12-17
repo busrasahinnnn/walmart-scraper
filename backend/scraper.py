@@ -16,220 +16,206 @@ SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
 
 async def scrape_walmart_product(item_id: str, max_reviews: int = 50, headless: bool = False) -> Dict[str, Any]:
     """
-    Scrape Walmart Canada product using ScraperAPI.
+    Scrape Walmart Canada product using ScraperAPI (simple, no render).
+    Gets ~7-10 reviews per product (first page only).
     """
-    print(f"\n🛒 Starting scrape for item {item_id}")
+    print(f"\n🛒 Starting scrape for: {item_id}")
     
     if not SCRAPER_API_KEY:
         raise ValueError("SCRAPER_API_KEY is required")
     
-    url = f"https://www.walmart.ca/en/ip/{item_id}"
+    client = ScraperAPIClient(SCRAPER_API_KEY)
+    
+    # Use SKU/Item ID directly
+    product_url = f"https://www.walmart.ca/en/ip/{item_id}"
     
     result = {
         "item_id": item_id,
-        "product_url": url,
+        "walmart_item_number": item_id,
+        "product_url": product_url,
         "scraped_at": datetime.now(timezone.utc).isoformat(),
         "product_title": None,
         "average_rating": None,
-        "total_ratings": None,  # Total number of ratings
-        "total_reviews": None,  # Total number of written reviews
+        "total_ratings": None,
+        "total_reviews": None,
         "rating_breakdown": {},
-        "reviews": []
+        "reviews": [],
+        "best_reviews": [],
+        "worst_reviews": []
     }
     
     try:
         print("  🔑 Connecting to ScraperAPI...")
-        client = ScraperAPIClient(SCRAPER_API_KEY)
         
-        print(f"  📄 Fetching: {url}")
-        html_content = client.get(url)
+        # Get product page
+        print(f"  📄 Fetching: {product_url}")
+        html = client.get(product_url)
         
-        if not html_content:
-            raise RuntimeError("Failed to fetch page - empty response")
+        if not html or len(html) < 100:
+            raise RuntimeError("Failed to fetch page")
         
-        print(f"  ✅ Page fetched successfully!")
+        print(f"  ✅ Page fetched! ({len(html)} chars)")
         
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = BeautifulSoup(html, 'html.parser')
         
         # Extract title
-        print("  🔍 Extracting title...")
+        print("  🔍 Extracting product info...")
         title_el = soup.find('h1')
         if title_el:
             result["product_title"] = title_el.get_text(strip=True)
             print(f"  ✓ Title: {result['product_title'][:60]}...")
         
-        # Look for JSON-LD Product schema
-        print("  🔍 Looking for JSON-LD data...")
+        # Extract rating from JSON-LD
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 data = json.loads(script.string)
-                
-                products = []
-                if isinstance(data, dict):
-                    if data.get('@type') == 'Product':
-                        products = [data]
-                elif isinstance(data, list):
-                    products = [item for item in data if isinstance(item, dict) and item.get('@type') == 'Product']
-                
-                for product in products:
-                    agg = product.get('aggregateRating', {})
-                    
+                if isinstance(data, dict) and data.get('@type') == 'Product':
+                    agg = data.get('aggregateRating', {})
                     if agg.get('ratingValue'):
                         result["average_rating"] = float(agg['ratingValue'])
                         print(f"  ✓ Rating: {result['average_rating']}")
-                    
-                    # Store but don't use this yet
                     if agg.get('reviewCount'):
-                        json_ld_count = int(agg['reviewCount'])
-                        result["total_ratings"] = json_ld_count  # This is total ratings
-                        print(f"  📊 JSON-LD reviewCount (total ratings): {json_ld_count}")
+                        result["total_ratings"] = int(agg['reviewCount'])
+                        result["total_reviews"] = int(agg['reviewCount'])
+                        print(f"  ✓ Total ratings: {result['total_ratings']}")
                     
-                    if agg:
-                        print(f"  📊 aggregateRating data: {agg}")
-                    
-                    break
-                
-                if result["average_rating"]:
-                    break
-            except:
-                continue
-        
-        # CRITICAL: Search HTML for ALL occurrences of "reviews" to find the right one
-        print("  🔍 Searching ALL occurrences of 'reviews' and 'ratings' in HTML...")
-        
-        # Find all matches
-        all_matches = re.findall(r'([\d,]+)\s+(reviews?|ratings?)', html_content, re.I)
-        
-        if all_matches:
-            print(f"  📝 Found {len(all_matches)} number + 'review/rating' patterns:")
-            for num, word in all_matches[:10]:  # Show first 10
-                print(f"     - {num} {word}")
-            
-            # Separate reviews from ratings
-            review_matches = [(num, word) for num, word in all_matches if 'review' in word.lower()]
-            rating_matches = [(num, word) for num, word in all_matches if 'rating' in word.lower()]
-            
-            # Get total reviews (written reviews)
-            if review_matches:
-                first_review_count = review_matches[0][0].replace(',', '')
-                count = int(first_review_count)
-                result["total_reviews"] = count
-                # If we don't have total_ratings yet, use this as fallback
-                if not result["total_ratings"]:
-                    result["total_ratings"] = count
-                print(f"  ✓ Total reviews (written): {result['total_reviews']}")
-            
-            # Get total ratings if not already set
-            if not result["total_ratings"] and rating_matches:
-                first_rating_count = rating_matches[0][0].replace(',', '')
-                result["total_ratings"] = int(first_rating_count)
-                print(f"  ✓ Total ratings: {result['total_ratings']}")
-        
-        # Search for rating if still not found
-        if not result["average_rating"]:
-            print("  🔍 Searching for rating in HTML...")
-            
-            # Try multiple patterns
-            rating_patterns = [
-                r'(\d+\.\d+)\s*out of\s*5',
-                r'"ratingValue"\s*:\s*"?(\d+\.?\d*)"?',
-                r'"averageRating"\s*:\s*"?(\d+\.?\d*)"?',
-                r'rating["\s:]+(\d+\.\d+)',
-            ]
-            
-            for pattern in rating_patterns:
-                match = re.search(pattern, html_content, re.I)
-                if match:
-                    try:
-                        rating = float(match.group(1))
-                        if 0 <= rating <= 5:
-                            result["average_rating"] = rating
-                            print(f"  ✓ Rating from pattern: {result['average_rating']}")
-                            break
-                    except:
-                        continue
-        
-        # Extract actual reviews
-        print("  🔍 Looking for individual reviews...")
-        
-        # Try to find reviews in JSON-LD Review schema
-        for script in soup.find_all('script', type='application/ld+json'):
-            try:
-                data = json.loads(script.string)
-                
-                reviews_found = []
-                
-                if isinstance(data, dict):
-                    if data.get('@type') == 'Review':
-                        reviews_found = [data]
-                    elif data.get('review'):
+                    # Extract reviews from JSON-LD if available
+                    if data.get('review'):
                         reviews = data['review']
-                        if isinstance(reviews, list):
-                            reviews_found = reviews
-                        else:
-                            reviews_found = [reviews]
-                elif isinstance(data, list):
-                    reviews_found = [item for item in data if isinstance(item, dict) and item.get('@type') == 'Review']
-                
-                if reviews_found:
-                    print(f"  ✓ Found {len(reviews_found)} reviews in JSON-LD")
+                        if not isinstance(reviews, list):
+                            reviews = [reviews]
+                        
+                        print(f"  📝 Found {len(reviews)} reviews in JSON-LD")
+                        
+                        for rev in reviews[:max_reviews]:
+                            try:
+                                review_data = {
+                                    "review_id": None,
+                                    "author_name": "Anonymous",
+                                    "rating": None,
+                                    "title": "",
+                                    "body": "",
+                                    "created_at": None,
+                                    "verified_purchase": False,
+                                    "location": None,
+                                    "helpful_count": 0,
+                                    "not_helpful_count": 0,
+                                    "images": [],
+                                }
+                                
+                                # Author
+                                if rev.get('author'):
+                                    author = rev['author']
+                                    if isinstance(author, dict):
+                                        review_data["author_name"] = author.get('name', 'Anonymous')
+                                    else:
+                                        review_data["author_name"] = str(author)
+                                
+                                # Rating - ensure it's between 1-5
+                                rating_obj = rev.get('reviewRating', {})
+                                if isinstance(rating_obj, dict) and rating_obj.get('ratingValue'):
+                                    rating_val = float(rating_obj['ratingValue'])
+                                    # Walmart sometimes stores as 1-5, sometimes as 0-100
+                                    if rating_val > 5:
+                                        rating_val = rating_val / 20  # Convert 0-100 to 0-5
+                                    review_data["rating"] = int(round(rating_val))
+                                    
+                                    # Debug first few
+                                    if len(result["reviews"]) < 3:
+                                        print(f"    Debug: Rating {rating_val} → {review_data['rating']} stars")
+                                
+                                # Title and body
+                                review_data["title"] = rev.get('name', '') or rev.get('headline', '')
+                                review_data["body"] = rev.get('reviewBody', '') or rev.get('description', '')
+                                review_data["created_at"] = rev.get('datePublished')
+                                
+                                if review_data["body"] or review_data["rating"]:
+                                    result["reviews"].append(review_data)
+                            except:
+                                continue
                     
-                    for review in reviews_found[:max_reviews]:
-                        try:
-                            review_data = {
-                                "review_id": None,
-                                "author_name": "Anonymous",
-                                "rating": None,
-                                "title": "",
-                                "body": "",
-                                "created_at": None,
-                                "verified_purchase": False,
-                                "location": None,
-                                "helpful_count": 0,
-                                "not_helpful_count": 0,
-                                "images": [],
-                            }
-                            
-                            if review.get('author'):
-                                author = review['author']
-                                if isinstance(author, dict):
-                                    review_data["author_name"] = author.get('name', 'Anonymous')
-                                else:
-                                    review_data["author_name"] = str(author)
-                            
-                            rating_obj = review.get('reviewRating', {})
-                            if isinstance(rating_obj, dict) and rating_obj.get('ratingValue'):
-                                review_data["rating"] = int(float(rating_obj['ratingValue']))
-                            
-                            review_data["title"] = review.get('name', '') or review.get('headline', '')
-                            review_data["body"] = review.get('reviewBody', '') or review.get('description', '')
-                            review_data["created_at"] = review.get('datePublished')
-                            
-                            if review_data["body"] or review_data["rating"]:
-                                result["reviews"].append(review_data)
-                        except:
-                            continue
-                    
-                    if result["reviews"]:
-                        break
+                    break
             except:
                 continue
         
-        if result["reviews"]:
-            print(f"  ✓ Extracted {len(result['reviews'])} real reviews")
-        else:
-            print("  ⚠️  No review content found - reviews may be loaded via separate API")
+        # If no reviews in JSON-LD, try to find in HTML
+        if not result["reviews"]:
+            print("  🔍 Looking for reviews in HTML...")
+            
+            # Try different selectors
+            review_elements = (
+                soup.find_all('div', {'data-testid': re.compile(r'review', re.I)}) or
+                soup.find_all('div', class_=re.compile(r'review', re.I)) or
+                soup.find_all('section', class_=re.compile(r'review', re.I))
+            )
+            
+            print(f"  📝 Found {len(review_elements)} review elements in HTML")
+            
+            for idx, rev_el in enumerate(review_elements[:max_reviews]):
+                try:
+                    review_data = {
+                        "review_id": None,
+                        "author_name": "Anonymous",
+                        "rating": None,
+                        "title": "",
+                        "body": "",
+                        "created_at": None,
+                        "verified_purchase": False,
+                        "location": None,
+                        "helpful_count": 0,
+                        "not_helpful_count": 0,
+                        "images": [],
+                    }
+                    
+                    # Try to extract rating
+                    rating_text = rev_el.get_text()
+                    rating_match = re.search(r'(\d+)\s*(?:star|out of)', rating_text, re.I)
+                    if rating_match:
+                        review_data["rating"] = int(rating_match.group(1))
+                    
+                    # Title
+                    title_el = rev_el.find(['h3', 'h4', 'h5'])
+                    if title_el:
+                        review_data["title"] = title_el.get_text(strip=True)
+                    
+                    # Body
+                    body_el = rev_el.find('p')
+                    if body_el:
+                        review_data["body"] = body_el.get_text(strip=True)
+                    
+                    if review_data["body"] or review_data["title"]:
+                        result["reviews"].append(review_data)
+                except:
+                    continue
         
-        if not result["average_rating"]:
-            print("  ⚠️  Could not extract rating")
-        if not result["total_reviews"]:
-            print("  ⚠️  Could not extract review count")
+        print(f"  ✓ Extracted {len(result['reviews'])} reviews")
+        
+        # Categorize best and worst  
+        if result["reviews"] and len(result["reviews"]) >= 2:
+            print("  🔍 Categorizing reviews...")
+            
+            rated = [r for r in result["reviews"] if r.get("rating") and r["rating"] > 0]
+            
+            if rated:
+                # Best: Only 4-5 stars
+                best = [r for r in rated if r["rating"] >= 4]
+                result["best_reviews"] = best[:5]
+                
+                # Worst: Only 1-3 stars
+                worst = [r for r in rated if r["rating"] <= 3]
+                result["worst_reviews"] = worst[:5]
+                
+                print(f"  ✓ {len(result['best_reviews'])} best (4-5★), {len(result['worst_reviews'])} worst (1-3★)")
+
+        
+        if not result["reviews"]:
+            print("  ⚠️  No reviews found - product may not have reviews yet")
         
     except Exception as e:
-        print(f"❌ Error during scraping: {e}")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
         raise
     
-    print(f"✅ Completed scrape for item {item_id}\n")
+    print(f"✅ Completed! Reviews: {len(result['reviews'])}\n")
     return result
